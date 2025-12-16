@@ -3,6 +3,7 @@ import { ExpandableText, type Chunk } from './ExpandableText';
 
 interface Column {
   id: string;
+  word?: string; // The word text that opened this column
   chunks: Chunk[];
   highlightColor: string;
   parentWordId?: string; // ID of the word that opened this column
@@ -45,6 +46,7 @@ export const ColumnView: React.FC<ColumnViewProps> = ({ rootChunks }) => {
   const [columns, setColumns] = useState<Column[]>([
     { id: 'root', chunks: rootChunks, highlightColor: '#3b82f6' },
   ]);
+  const [expansionHistory, setExpansionHistory] = useState<Map<string, string[]>>(new Map());
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Prevent scrolling left past the root column
@@ -68,6 +70,39 @@ export const ColumnView: React.FC<ColumnViewProps> = ({ rootChunks }) => {
     return findChunkById(columns[columnIndex].chunks, id);
   };
 
+  // Helper function to get the chain of parentWordIds from a column index onward
+  const getExpansionChain = (fromIndex: number): string[] => {
+    return columns.slice(fromIndex).map(col => col.parentWordId).filter(Boolean) as string[];
+  };
+
+  // Helper function to restore a chain: given a starting column's chunks and a list of word ids, recursively find each chunk and build the columns array
+  const restoreChain = (startingChunks: Chunk[], chain: string[], startColumnIndex: number): Column[] => {
+    const restoredColumns: Column[] = [];
+    let currentChunks = startingChunks;
+    let currentColumnIndex = startColumnIndex;
+
+    for (const wordId of chain) {
+      const chunk = findChunkById(currentChunks, wordId);
+      if (!chunk || typeof chunk === 'string') break;
+      if (!chunk.expansion || chunk.expansion.length === 0) break;
+
+      currentColumnIndex++;
+      const highlightColor = generateHighlightColor(currentColumnIndex);
+
+      restoredColumns.push({
+        id: chunk.id,
+        word: chunk.word,
+        chunks: chunk.expansion,
+        highlightColor,
+        parentWordId: wordId,
+      });
+
+      currentChunks = chunk.expansion;
+    }
+
+    return restoredColumns;
+  };
+
   const handleWordClick = (id: string, columnIndex: number) => {
     const chunk = findChunkInColumns(id, columnIndex);
     
@@ -75,7 +110,67 @@ export const ColumnView: React.FC<ColumnViewProps> = ({ rootChunks }) => {
     
     if (!chunk.expansion || chunk.expansion.length === 0) return;
 
-    // Generate highlight color for the new column
+    // Check if the clicked word already has a column open to its right
+    const nextColumn = columns[columnIndex + 1];
+    if (nextColumn?.parentWordId === id) {
+      // Save the current chain of parentWordIds from columnIndex+1 onward into expansionHistory
+      const chain = getExpansionChain(columnIndex + 1);
+      setExpansionHistory(prev => {
+        const newMap = new Map(prev);
+        newMap.set(id, chain);
+        return newMap;
+      });
+
+      // Close all columns to the right
+      const newColumns = columns.slice(0, columnIndex + 1);
+      setColumns(newColumns);
+      return;
+    }
+
+    // Check if clicking a word that has saved history
+    const savedChain = expansionHistory.get(id);
+    if (savedChain && savedChain.length > 0) {
+      // Restore the full chain: open the clicked word's expansion, then recursively open each saved word in the chain
+      const newColumns = columns.slice(0, columnIndex + 1);
+      
+      // Add the first column (the clicked word's expansion)
+      const newColumnIndex = columnIndex + 1;
+      const highlightColor = generateHighlightColor(newColumnIndex);
+      newColumns.push({
+        id: chunk.id,
+        word: chunk.word,
+        chunks: chunk.expansion,
+        highlightColor,
+        parentWordId: id,
+      });
+
+      // Restore the rest of the chain
+      const restoredColumns = restoreChain(chunk.expansion, savedChain, newColumnIndex);
+      newColumns.push(...restoredColumns);
+
+      setColumns(newColumns);
+
+      // Clear that history entry after restoring
+      setExpansionHistory(prev => {
+        const newMap = new Map(prev);
+        newMap.delete(id);
+        return newMap;
+      });
+
+      // Scroll to show the restored columns
+      setTimeout(() => {
+        if (containerRef.current) {
+          const scrollLeft = containerRef.current.scrollWidth - containerRef.current.clientWidth;
+          containerRef.current.scrollTo({
+            left: scrollLeft,
+            behavior: 'smooth',
+          });
+        }
+      }, 0);
+      return;
+    }
+
+    // Normal new click: close columns to right, open new column
     const newColumnIndex = columnIndex + 1;
     const highlightColor = generateHighlightColor(newColumnIndex);
 
@@ -85,6 +180,7 @@ export const ColumnView: React.FC<ColumnViewProps> = ({ rootChunks }) => {
     // Add the new column with the expansion
     newColumns.push({
       id: chunk.id,
+      word: chunk.word, // Store the word text
       chunks: chunk.expansion,
       highlightColor,
       parentWordId: id, // Track which word opened this column
@@ -135,6 +231,7 @@ export const ColumnView: React.FC<ColumnViewProps> = ({ rootChunks }) => {
         height: '100vh',
         padding: '20px',
         gap: '20px',
+        alignItems: 'flex-start',
       }}
     >
       {columns.map((column, index) => (
@@ -151,11 +248,18 @@ export const ColumnView: React.FC<ColumnViewProps> = ({ rootChunks }) => {
             flexDirection: 'column',
           }}
         >
-          <ExpandableText
-            chunks={column.chunks}
-            onWordClick={(id) => handleWordClick(id, index)}
-            highlightedWords={getHighlightedWords(index)}
-          />
+          {index > 0 && (
+            <div style={{ fontWeight: 'bold', color: column.highlightColor, marginBottom: '12px' }}>
+              {column.word}
+            </div>
+          )}
+          <div style={{ lineHeight: 1.6 }}>
+            <ExpandableText
+              chunks={column.chunks}
+              onWordClick={(id) => handleWordClick(id, index)}
+              highlightedWords={getHighlightedWords(index)}
+            />
+          </div>
         </div>
       ))}
     </div>
